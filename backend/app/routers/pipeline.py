@@ -1,4 +1,8 @@
-"""数据管线编排接口：维护管线节点，覆盖启动管线、暂停管线、归档管线等动作。"""
+"""数据管线编排接口：维护管线节点，覆盖启动管线、暂停管线、归档管线等动作。
+
+``/api/pipeline/runtime*`` 一组端点读取持久化的迁移结果（运行状态、依赖边、断点日志、
+输出格式快照），重启后数据不丢；旧 CRUD 端点保持不变，兼容既有页面与依赖。
+"""
 from __future__ import annotations
 
 from typing import Any
@@ -7,6 +11,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from app.schemas import ActionResult, EntryPayload, PageResult
 from app.services.pipeline import PipelineService
+from app.services.pipeline_runtime import runtime_service
 
 router = APIRouter(prefix="/api/pipeline", tags=["数据管线编排"])
 
@@ -14,6 +19,50 @@ service = PipelineService()
 
 LIST_FIELDS = ["节点编号", "节点名称", "上游节点", "处理逻辑", "输出格式", "错误处理", "重试策略", "节点状态"]
 STATUSES = ["草稿", "运行中", "已暂停", "已完成"]
+
+
+@router.get("/runtime/nodes")
+def runtime_nodes() -> dict[str, Any]:
+    """读取迁移恢复后的管线运行结果，按节点编号排序。"""
+    return {"module": "pipeline", "items": runtime_service.list_runtime_nodes()}
+
+
+@router.get("/runtime/edges")
+def runtime_edges() -> dict[str, Any]:
+    """读取节点依赖边；唯一约束保证任意节点对之间最多一条边。"""
+    return {"module": "pipeline", "items": runtime_service.list_edges()}
+
+
+@router.get("/runtime/snapshots")
+def runtime_snapshots(node_code: str | None = None) -> dict[str, Any]:
+    """读取输出格式快照；传 node_code 时只返回该节点，缺失时回 404。"""
+    if node_code:
+        snapshot = runtime_service.get_snapshot(node_code)
+        if snapshot is None:
+            raise HTTPException(status_code=404, detail=f"节点 {node_code} 的输出格式快照不存在")
+        return {"module": "pipeline", "item": snapshot}
+    return {"module": "pipeline", "items": runtime_service.list_snapshots()}
+
+
+@router.get("/runtime/migration")
+def runtime_migration() -> dict[str, Any]:
+    """迁移断点与回填日志：按节点编号记录开始、完成和中断位置。"""
+    return {"module": "pipeline", **runtime_service.migration_status()}
+
+
+@router.post("/runtime/resume")
+def runtime_resume() -> dict[str, Any]:
+    """手动触发断点续跑；已完整的节点会被跳过，不产生重复依赖边。"""
+    return {"ok": True, **runtime_service.resume_migration()}
+
+
+@router.post("/runtime/nodes/{node_code}/running")
+def runtime_mark_running(node_code: str) -> ActionResult:
+    """把节点置为运行中；等待上游且前置未完成时拒绝，等待态不会被提前改写。"""
+    entry, message = runtime_service.mark_running(node_code)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=message)
+    return ActionResult(ok=entry["runtime_status"] == "运行中", message=message, entry=entry)
 
 
 @router.get("", response_model=PageResult[dict])

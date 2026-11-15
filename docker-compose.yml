@@ -5,9 +5,18 @@ services:
       - "8000:8000"
     environment:
       - APP_ENV=local
+      - PIPELINE_AUTO_MIGRATE=1
+      # 数据库与回填日志落到命名卷，容器重建/重新部署后节点、依赖边与断点完整保留
+      - PIPELINE_DB_PATH=/srv/data/pipeline_state.sqlite3
+      - PIPELINE_MIGRATION_LOG_DIR=/srv/data/logs
+    volumes:
+      - pipeline-state:/srv/data
   frontend:
     build: ./frontend
     ports:
       - "5173:5173"
     depends_on:
       - backend
+
+volumes:
+  pipeline-state:

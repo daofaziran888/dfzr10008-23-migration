@@ -59,3 +59,13 @@ class DatapackService:
         entry["pending"] = target != STATUS_ORDER[-1]
         entry["abnormal"] = action in NEGATIVE_ACTIONS
         return entry, f"模型封装已{action}"
+
+    def get_output_snapshot(self, source_code: str) -> dict[str, Any] | None:
+        """读取来源编号（如管线节点 PL-0001）的输出格式快照。
+
+        快照随迁移落库，重启后仍能拿到原始输出格式；未迁移过的编号返回 None，
+        由路由层回退到内存示例数据，兼容旧依赖。
+        """
+        from app.persistence.repository import get_repo
+
+        return get_repo().get_snapshot(source_code)

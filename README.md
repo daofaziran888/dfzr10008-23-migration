@@ -17,10 +17,67 @@
 ├── backend/                  FastAPI（Python） 后端
 │   ├── app/routers/          每个业务模块一组接口
 │   ├── app/services/         业务规则与状态流转
-│   └── app/store.py          内存数据仓库与示例数据
+│   ├── app/persistence/      管线运行状态持久化与迁移（sqlite，重启不丢）
+│   ├── app/store.py          内存数据仓库与示例数据
+│   └── tests/                迁移验收测试（标准库 unittest）
 ├── .gitignore
 └── docker-compose.yml
 ```
+
+## 产品管线运行状态迁移
+
+管线节点、依赖边、失败断点与输出格式快照全部落在 sqlite，重启后完整恢复，不再只存在内存里。
+
+### 迁移样例
+
+| 节点编号 | 运行结果 | 重试策略 | 失败码 | 输出格式 |
+| --- | --- | --- | --- | --- |
+| PL-0001 | 已完成 | 0 次 | — | parquet |
+| PL-0002 | 失败 | 3 次 | ORA-LOAD-17 | parquet |
+| PL-0003 | 等待上游 | 2 次 | — | parquet |
+
+依赖关系：`PL-0001 → PL-0002 → PL-0003`。
+
+迁移语义：
+
+- 按节点编号顺序回填，每个节点落库后写断点；中断重启后从最后一个完整节点继续。
+- 节点编号与依赖边（上游, 下游）均有唯一约束：新节点与回填并发时先完成落库者为准，重跑不产生第二条依赖边。
+- PL-0003 在前置 PL-0002 完成前保持「等待上游」，迁移器与启动接口都不能把它提前改成运行中。
+- 回填日志按节点编号记录开始、完成和中断位置（数据库 + `pipeline-migration.log` 双份留痕）。
+- 既有 PIPE 示例节点幂等回填重试策略与输出格式快照，旧 CRUD 接口与页面保持不变。
+
+### 命令行（在 backend 目录下）
+
+```bash
+python -m app.persistence.cli init       # 建库建表 + 回填既有示例节点
+python -m app.persistence.cli migrate    # 执行/断点续跑迁移（幂等）
+python -m app.persistence.cli status     # 查看节点、依赖边、断点与日志
+python -m app.persistence.cli verify     # 按验收口径核对，不符则非零退出
+python -m app.persistence.cli reset      # 清空持久层，重新演练
+```
+
+或用 Makefile：`make migrate`、`make migrate-status`、`make migrate-verify`、`make test`。
+
+### 环境变量
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `PIPELINE_DB_PATH` | `backend/data/pipeline_state.sqlite3` | sqlite 数据文件 |
+| `PIPELINE_MIGRATION_LOG_DIR` | `backend/data/logs` | 回填日志目录 |
+| `PIPELINE_AUTO_MIGRATE` | `0`（run.sh / 容器入口默认置 `1`） | 启动时自动断点续跑 |
+
+四类环境的覆盖方式：本地开发走 `run.sh`；构建产物在镜像 `entrypoint.sh` 里 init + migrate；
+上线部署由容器启动续跑；docker-compose 用命名卷 `pipeline-state` 持久化 `/srv/data`。
+
+### 运行时接口
+
+- `GET /api/pipeline/runtime/nodes`：迁移恢复后的节点运行结果
+- `GET /api/pipeline/runtime/edges`：节点依赖边
+- `GET /api/pipeline/runtime/snapshots?node_code=PL-0001`：输出格式快照
+- `GET /api/pipeline/runtime/migration`：迁移断点与按节点编号的回填日志
+- `POST /api/pipeline/runtime/resume`：手动触发断点续跑
+- `POST /api/pipeline/runtime/nodes/{node_code}/running`：置运行中（等待态保护）
+- `GET /api/datapack/snapshot/PL-0001`：数据模型封装按来源编号读取原输出格式
 
 ## 启动
 

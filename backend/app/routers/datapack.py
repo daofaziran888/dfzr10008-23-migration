@@ -30,6 +30,18 @@ def list_entries(
     return PageResult(items=items, total=total, page=page, size=size)
 
 
+@router.get("/snapshot/{source_code}")
+def get_output_snapshot(source_code: str) -> dict[str, Any]:
+    """按来源编号读取输出格式快照（如 PL-0001 仍返回原格式 parquet）。
+
+    持久层没有该编号的快照时回退到内存示例数据，兼容尚未迁移的旧依赖。
+    """
+    snapshot = service.get_output_snapshot(source_code)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail=f"来源 {source_code} 的输出格式快照不存在")
+    return {"module": "datapack", "item": snapshot}
+
+
 @router.get("/{entry_id}", response_model=dict)
 def get_entry(entry_id: int) -> dict:
     """读取单条模型封装明细；不存在时给出可读的错误说明。"""
